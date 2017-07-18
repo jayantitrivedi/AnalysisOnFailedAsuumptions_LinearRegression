@@ -1,0 +1,188 @@
+---
+title: "Analysis on Heteroscedasticity"
+author: "JAYANTI TRIVEDI"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: pdf_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(purrr)
+  library(broom)
+  library(tidyr)
+  library(ggplot2)
+  library(dplyr)
+})
+
+set.seed(12345) 
+```
+
+# Monte-Carlo Simulation for Heteroscedasticity
+
+## Simulating 1 sample containing $N = 100L$ observations for the following linear regression model
+
+$$
+y = 0.2 + 0.5\cdot x + \varepsilon
+$$
+such that $\varepsilon\sim N\left(0,\left(\frac{1}{\lambda}e^{\gamma x}\right)^2\right)$ with $\lambda=50$ and $\gamma=5$.
+
+* Assuming `X` is picked uniformly randomly in $[-1,1]$ interval
+    
+* Creates a *data.frame* `df1` that contains numeric vector `df1$X` contains the generated `X` variable, `df1$Y` contains the generated dependent variables and `df1$e` contains the generated disturbances.
+    - Also reports the standard deviation of `df1$e` as well
+    
+
+```{r}
+N <- 100L
+set.seed(12345) 
+
+# These are true population coefficients
+b0 <- 0.2 
+b1 <- 0.5
+
+# These are values for lambda and gamma
+lambda_h <- 50
+gamma_h <- 5
+
+df1 = data.frame(
+                 X = runif(N,-1,1)) %>%
+  mutate(e = rnorm(N,0,sqrt(((1/lambda_h)*exp(gamma_h*.$X))^2))) %>%
+  mutate(Y= b0 + b1*X + e)
+
+#Standard deviation of df$e
+sd(df1$e)
+```
+
+## Estimating coefficients using regular OLS model
+
+Using regular OLS model to estimate the coefficients $b$ from that sample. Reports these coefficients as well as the standard error estimates and 95% confidence interval.
+
+Also, demonstrates the heteroscedasticity with a plot!
+
+```{r}
+lm_model = lm(Y~X, data = df1)
+summary(lm_model)
+confint(lm_model)
+
+#for plotting residuals
+Y.res = resid(lm_model)
+
+plot(df1$X, Y.res, 
+     ylab="Residuals", xlab="X", 
+     main="Residual Plot") 
+abline(0, 0)
+```
+
+## Generates R=2000 independent samples with N=100
+
+* Creates a *data.frame* `df3` that contains numeric vector `df3$X` contains the generated `X` variable, `df3$Y` contains the generated dependent variables and `df3$e` contains the generated disturbances, `df3$id` contains the id of the sample
+    
+
+```{r}
+set.seed(12345)
+
+R <- 2000L
+
+df3 = data.frame(X = rep(runif(N,-1,1), R),
+                 id = rep(1:R, each=N)) %>%
+  mutate(e = rnorm(N*R,0,sqrt(((1/lambda_h)*exp(gamma_h*.$X))^2))) %>%
+  mutate(Y= b0 + b1*X + e)
+```
+
+## Estimating coefficients
+
+Generate a set of $R$ coefficient estimates in long format instead of wide format
+
+```{r}
+df4 <- df3 %>%
+  group_by(id) %>%
+  nest() %>%
+  mutate(estimated_model = map(data,~lm(Y~X,data=.))) %>%
+  mutate(estimated_coef = map(estimated_model, ~tidy(.,conf.int=TRUE))) %>%
+  unnest(estimated_coef)
+
+head(df4)
+```
+
+## Plots the histograms of coefficient estimates `b0` and `b1` against the true value
+
+```{r}
+# First, creates a data.frame with two rows for true values
+true_df <- data.frame(term = c("(Intercept)","X"),
+                      true_value = c(0.2, 0.5),
+                      stringsAsFactors = FALSE # to remove the warning in join
+                      )
+
+p5 <- ggplot(df4) +
+  geom_histogram(aes(estimate), bins=30) +
+  geom_vline(aes(xintercept = true_value),
+             color = "red",
+             data = true_df) +
+  facet_grid(~term) +
+  theme_bw()
+
+p5
+```
+#### From above, it can be seen that the estimators for both are clearly unbiased!
+
+
+## Estimate the true standard deviation of coefficients `b0` and `b1` and compares it to the estimate obtained above in the process
+
+* Answer the following questions:
+    - Did Question 2 produce a good estimate of true variability across different samples?
+
+```{r}
+df4 %>%
+   group_by(term) %>%
+   summarise(mean(estimate), sd(estimate))
+ 
+```
+
+Above in the process, our best guess was not perfect. It's still close enough. This is because the assumption of homooscedasticity is violated.
+
+sd(estimate) shows the variability of our estimates as we keep going from one sample of size 100 to another sample of size 100 and on and on
+ 
+sd(estimate) is basically the "true variability" since it is obtained by actually doing the resampling again and again, while the standard errors that we obtained in Q2 above are just our best guess based on 1 sample of 100.
+ 
+## Count how often the 95% confidence interval contains true value for each `b0` and `b1` (separately)
+
+```{r}
+df4 %>%
+  inner_join(true_df, by="term") %>%
+  group_by(term) %>%
+  # does the conf int contain the true value?
+  mutate(contains = ifelse(conf.low <= true_value & 
+                             true_value <= conf.high,
+                           1L, # yes
+                           0L  # no
+                           )) %>%
+  # How often does it contain?
+  summarise(mean(contains))
+```
+95% confidence intervals indeed contain the true value for approximately 95% of the samples for b0 but not for b1. This is because the assumption of homooscedasticity is violated. In other words, our 95% confidence intervals for b1 is overconfident!
+
+## Plots the first 100 of confidence intervals for both `b0` and `b1`, along with true values
+
+```{r}
+p8 <- ggplot(df4 %>% filter(id<=100)) + 
+  geom_hline(aes(yintercept = true_value), 
+             color = "red",
+             data = true_df) + 
+  geom_errorbar(aes(x=id, ymin=conf.low, ymax=conf.high)) +
+  facet_grid(term~.) +
+  theme_bw()
+
+p8
+```
+
+
+## Summary of Analysis
+
+* The problems that we can experience in ordinary linear regression estimation if error terms have some heteroscedasticity are as below:
+
+> When error terms have heteroscedasticity in OLS then we don't see the estimation of true values
+of estimators to be biased. Also, the 95% confidence interval for b0 contains the true value in 
+approximately 95% of cases, but 95% confidence interval for b1 is overconfident which means
+it overstated the confidence interval as 95% when actually it contained the true value only
+80% of times. The OLS also doesn't produce an accurate estimate of true variability of estimators
+across different samples but still it's close enough.
